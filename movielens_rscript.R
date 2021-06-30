@@ -15,8 +15,9 @@ library(data.table)
 #Adding more libraries
 library(ggplot2)
 library(lubridate)
-library(knitr) 
+library(knitr)
 library(kableExtra)
+library(anytime)
 library(Matrix)
 library(matrixStats)
 library(dplyr)
@@ -37,7 +38,6 @@ colnames(movies) <- c("movieId", "title", "genres")
 movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
                                            title = as.character(title),
                                            genres = as.character(genres))
-
 
 movielens <- left_join(ratings, movies, by = "movieId")
 
@@ -120,7 +120,7 @@ edx %>%
   summarize(count=n()) %>%
   arrange(desc(count))
 
-# the data frame top_title contains the top 15 movies which count the major number of ratings
+# the top 15 movies which count the major number of ratings
 top_title <- edx %>%
   group_by(title) %>%
   summarize(count=n()) %>%
@@ -143,120 +143,167 @@ edx %>% separate_rows(genres, sep = "\\|") %>%
   summarize(count = n()) %>%
   arrange(desc(count))
 
+#transforming userID and movieId as factors for analysis
+edx$userId <- as.factor(edx$userId) 
+edx$movieId <- as.factor(edx$movieId) 
+edx$genres <- as.factor(edx$genres) 
+edx$timestamp <- as.POSIXct(edx$timestamp, origin = "1970-01-01") # Convert timestamp to POSIXct.
 
-#Testing the correlation between ratings, userId and MovieID 
+edx <- edx %>% 
+  mutate(title = str_trim(title)) %>%
+  extract(title, c("title_tmp", "year"), # extracting the release year of the movie from the title column
+          regex = "^(.*) \\(([0-9 \\-]*)\\)$",
+          remove = F) %>%
+  mutate(year = if_else(str_length(year) > 4, #createing year column.
+                        as.integer(str_split(year, "-",
+                                             simplify = T)[1]),
+                        as.integer(year))) %>%
+  mutate(title = if_else(is.na(title_tmp), title, title_tmp)) %>%
+  select(-title_tmp)  %>%
+  mutate(genres = if_else(genres == "(no genres listed)",
+                          `is.na<-`(genres), genres))
 
-#Number of ratings per movie
-movie_ratings <- edx %>% group_by(movieId) %>% summarize(n = n())
+edx <- edx %>% mutate(year_rate = year(timestamp)) # creating a column for the year the movie was rated
 
-#Average Movie Rating 
-avg_movie_rate <- edx %>% group_by(movieId) %>% summarize(avg_rate = mean(rating))
-
-#correlation data
-cor_dat <- edx %>% select(rating, movieId, userId) %>%
-  left_join(movie_ratings, by = "movieId") %>%
-  left_join(avg_movie_rate, by = 'movieId')
-head(cor_dat)
-
-
-
-edx$userId <- as.factor(edx$userId)
-edx$movieId <- as.factor(edx$movieId)
-
-#converting userID and movieId to numeric vectors to use the sparseMatrix function
-edx$userId <- as.numeric(edx$userId)
-edx$movieId <- as.numeric(edx$movieId)
-sparse_rating <- sparseMatrix(i = edx$userId,
-                               j = edx$movieId ,
-                               x = edx$rating,
-                               dims = c(length(unique(edx$userId)),
-                                        length(unique(edx$movieId))),
-                               dimnames = list(paste("u", 1:length(unique(edx$userId)), sep = ""),
-                                               paste("m", 1:length(unique(edx$movieId)), sep = "")))
-
-sparse_rating[1:20,1:20] #each row is a user and each column is a movie
-
-#extracting the year as a column 
-edx <- edx %>% mutate(year = as.numeric(str_sub(title,-5,-2)))
-validation <- validation %>% mutate(year = as.numeric(str_sub(title,-5,-2)))
+# It extracts the year that the rate was given by the user.
+edx <- edx %>% select(-timestamp) # removing the timsestamp column (optional)
+edx$genres <- as.factor(edx$genres)
 
 head(edx)
-head(validation)
 
-# Star Rating per Release Year
-edx %>% group_by(year) %>%
-  summarize(rating = mean(rating)) %>%
-  ggplot(aes(year, rating)) +
-  geom_point() +
-  stat_smooth(se = TRUE,
-              n = 80,
-              span = 0.75,
-              fullrange = FALSE,
-              level = 0.95,
-              method.args = list(),
-              inherit.aes = TRUE)+
-  ggtitle("Star Rating per Release Year : edx dataset")
+summary(edx$rating) #edx rating summary
 
-# Star Rating per Release Year
-validation %>% group_by(year) %>%
-  summarize(rating = mean(rating)) %>%
-  ggplot(aes(year, rating)) +
-  geom_point() +
-  stat_smooth(se = TRUE,
-              n = 80,
-              span = 0.75,
-              fullrange = FALSE,
-              level = 0.95,
-              method.args = list(),
-              inherit.aes = TRUE)+
-  ggtitle("Star Rating per Release Year : validation dataset")
+#genres rating using the mean
+edx %>% group_by(genres) %>% summarize(avg_rating = mean(rating)) %>% arrange(desc(avg_rating))
+
+edx <- edx %>% select(userId, movieId, rating) #Three parameter of interest
+# Create the index
+test_index <- createDataPartition(edx$rating, times = 1, p = .2, list = F)
+#Creating the train and test sets
+train <- edx[-test_index, ] # The train set
+test <- edx[test_index, ] # The test set
+test <- test %>% # The same movieId and usersId appears in both set. (Not the same cases)
+  semi_join(train, by = "movieId") %>%
+  semi_join(train, by = "userId")
+
+dim(train)
+dim(test)
+
+#generating the model
+mu_0 <- mean(train$rating) # Mean rating on train set
+RMSE_0 <- RMSE(test$rating,mu_0) # RMSE in the test set.
+RMSE_0
 
 
+# obtaining prediction using the mean from movie and user effect
+mu <- mean(train$rating)
 
-
-                          data_frame(method="Movie Effect Model",  
- 
-
-mu <- mean(edx$rating)
-mu
-
-#calculate b_i on the training dataset
-movie_m <- edx %>%
+m_avgs <- train %>% 
   group_by(movieId) %>%
-  summarize(b_i = mean(rating - mu))
-movie_m
+  summarize(mi = mean(rating - mu)) #movie effect
 
-predicted_ratings_bi <- mu + validation %>%
-  left_join(movie_m, by=movieId’) %>%
-  .$b_i
+u_avgs <- test %>%
+  left_join(m_avgs, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(ui = mean(rating - mu -mi)) #user effect
 
-                                    RMSE = model_1_rmse ))
+predicted_ratings <- test %>%
+  left_join(m_avgs, by = "movieId") %>%
+  left_join(u_avgs, by = "userId") %>%
+  mutate(pred = mu +mi +ui) %>% .$pred
 
-rmse_results %>% knitr::kable()
-
-
-
-memory.limit(size=56000) #expanding memory allocated to R
-
-
+RMSE_1 <- RMSE(predicted_ratings, test$rating)
+RMSE_1  
 
 
+#prediction using the validation dataset
+validation <- validation %>% select(userId, movieId, rating) #we are interested in userId, movieId, & rating
+#treating userId & movieId as factors
+validation$userId <- as.factor(validation$userId)
+validation$movieId <- as.factor(validation$movieId)
+validation <- validation[complete.cases(validation), ]
+
+#The prediction
+mu <- mean(train$rating)
+
+m_avgs <- train %>%
+  group_by(movieId) %>%
+  summarize(mi = mean(rating - mu))
+
+u_avgs <- test %>%
+  left_join(m_avgs, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(ui = mean(rating - mu -mi))
+
+predicted_ratings <- test %>%
+  left_join(m_avgs, by = "movieId") %>%
+  left_join(u_avgs, by = "userId") %>%
+  mutate(pred = mu +mi +ui) %>% .$pred
 
 
+predicted_val <- validation %>%
+  left_join(m_avgs, by = "movieId") %>%
+  left_join(u_avgs, by = "userId") %>%
+  mutate(pred = mu +mi +ui) %>% .$pred
 
+RMSE_VAL <- RMSE(predicted_val, validation$rating, na.rm = T)
+RMSE_VAL
 
+#regularizing test data
+
+#with regularization, we evaluate different values for lambda, which a tuning parameter.
+
+lambda_values <- seq(0, 10, .25)
+t_RMSE_reg <- sapply(lambda_values, function(l){
   
+  mu <- mean(train$rating)
+  
+ mi <- train %>%
+    group_by(movieId) %>%
+    summarize(mi = sum(rating - mu)/(n()+l)) #movie effect
+  
+ ui <- train %>%
+    left_join(mi, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(ui = sum(rating -mi - mu)/(n()+l)) #user effect
+  
+  predicted_ratings <- test %>%
+    left_join(mi, by = "movieId") %>% 
+    left_join(ui, by = "userId") %>%
+    mutate(pred = mu +mi +ui) %>% .$pred
+  
+  return(RMSE(predicted_ratings, test$rating))
+})
+
+t_lambda <- lambda_values[which.min(t_RMSE_reg)]
+t_lambda  #Lambda minimizing the RMSE
+
+#regularization on validation dataset
+val_RMSE_reg <- sapply(lambda_values, function(l){
+  
+  mu <- mean(train$rating)
+  
+ mi <- train %>%
+    group_by(movieId) %>%
+    summarize(mi = sum(rating - mu)/(n()+l)) #movie effect
+  
+ ui <- train %>%
+    left_join(mi, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(ui = sum(rating -mi - mu)/(n()+l)) #user effect
+  
+  predicted_val_reg <- validation %>%
+    left_join(mi, by = "movieId") %>% 
+    left_join(ui, by = "userId") %>%
+    mutate(pred = mu +mi +ui) %>% .$pred
+  
+  return(RMSE(predicted_val_reg, validation$rating, na.rm = T))
+})
 
 
+val_lambda <- lambda_values[which.min(val_RMSE_reg)]
+val_lambda #  Lambda minimizing the RMSE
 
+min_rmse <- min(val_RMSE_reg) # Best RMSE
+min_rmse
 
-
-
-
-
-
-
-'""
-
-
-prpedicted_ratings_movie_norm$$pred $predicted_ratings_movie_norm$prpred
