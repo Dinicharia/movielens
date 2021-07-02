@@ -113,7 +113,7 @@ summary(edx) %>%  kable(caption = "Top rows of validation data frame") %>%
                 latex_options = c("scale_down", "HOLD_position"))
 
 ```
-The edx and validation datasets have six simiar variables (columns), namely ##userID##, ##movieID, ##rating##, ##timestamp##, ##title##, and ##genres##. The edx dataset has 9000055 observations while the validation dataset has 999999 observations. Now we can see that the dataset is in a tidy forma and good for further analysis.
+The edx and validation datasets have six similar variables (columns), namely userID, movieID, rating, timestamp, title, and genres. The edx dataset has 9000055 observations while the validation dataset has 999999 observations. Now we can see that the dataset is in a tidy format and good for further analysis.
 
 ## Visualization
 
